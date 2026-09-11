@@ -188,6 +188,7 @@ Set these environment variables to enable RabbitMQ integration:
 ```
 RABBITMQ_URL=amqp://guest:guest@localhost:5672
 RABBITMQ_QUEUE=whatsapp  # Optional (default: whatsapp_events)
+RABBITMQ_EXCHANGE=       # Optional fanout exchange (for example: whatsapp_events_fanout)
 ```
 
 When enabled:
@@ -196,6 +197,9 @@ When enabled:
 * Events will include the userId and instanceName
 * This works alongside webhook configurations - events will be sent to both RabbitMQ and any configured webhooks
 * The integration is global and affects all instances
+* When `RABBITMQ_EXCHANGE` is set, WuzAPI declares a durable `fanout` exchange, binds `RABBITMQ_QUEUE` to it, and publishes normal WhatsApp events to the exchange. Additional queues can be bound to receive independent copies.
+* When `RABBITMQ_EXCHANGE` is empty, WuzAPI keeps the original behavior and publishes directly to `RABBITMQ_QUEUE` through RabbitMQ's default exchange.
+* Explicit queue overrides, such as webhook error queues, continue to use direct queue delivery and are not broadcast.
 
 ### Webhook Security with HMAC
 

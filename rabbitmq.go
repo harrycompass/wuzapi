@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,11 +12,12 @@ import (
 )
 
 var (
-	rabbitConn    *amqp091.Connection
-	rabbitChannel *amqp091.Channel
-	rabbitEnabled bool
-	rabbitOnce    sync.Once
-	rabbitQueue   string
+	rabbitConn     *amqp091.Connection
+	rabbitChannel  *amqp091.Channel
+	rabbitEnabled  bool
+	rabbitOnce     sync.Once
+	rabbitQueue    string
+	rabbitExchange string
 )
 
 const (
@@ -26,7 +28,8 @@ const (
 // Call this in main() or initialization
 func InitRabbitMQ() {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
-	rabbitQueue = os.Getenv("RABBITMQ_QUEUE")
+	rabbitQueue = strings.TrimSpace(os.Getenv("RABBITMQ_QUEUE"))
+	rabbitExchange = strings.TrimSpace(os.Getenv("RABBITMQ_EXCHANGE"))
 
 	if rabbitQueue == "" {
 		rabbitQueue = "whatsapp_events" // default queue
@@ -94,6 +97,22 @@ func InitRabbitMQ() {
 			return
 		}
 
+		if err = declareRabbitTopology(channel); err != nil {
+			_ = channel.Close()
+			_ = conn.Close()
+			log.Warn().
+				Err(err).
+				Int("attempt", attempt).
+				Msg("Failed to declare RabbitMQ topology")
+			if attempt < maxRetries {
+				time.Sleep(retryInterval)
+				continue
+			}
+			rabbitEnabled = false
+			log.Error().Err(err).Msg("Could not declare RabbitMQ topology after all retries. RabbitMQ disabled.")
+			return
+		}
+
 		// Success!
 		rabbitConn = conn
 		rabbitChannel = channel
@@ -101,6 +120,7 @@ func InitRabbitMQ() {
 
 		log.Info().
 			Str("queue", rabbitQueue).
+			Str("exchange", rabbitExchange).
 			Int("attempt", attempt).
 			Msg("RabbitMQ connection established successfully")
 
@@ -149,12 +169,25 @@ func handleConnectionErrors() {
 				continue
 			}
 
+			if err = declareRabbitTopology(channel); err != nil {
+				_ = channel.Close()
+				_ = conn.Close()
+				log.Warn().
+					Err(err).
+					Int("attempt", attempt).
+					Msg("Failed to declare RabbitMQ topology on reconnection")
+				continue
+			}
+
 			// Reconnection successful
 			rabbitConn = conn
 			rabbitChannel = channel
 			rabbitEnabled = true
 
-			log.Info().Msg("RabbitMQ reconnected successfully")
+			log.Info().
+				Str("queue", rabbitQueue).
+				Str("exchange", rabbitExchange).
+				Msg("RabbitMQ reconnected successfully")
 
 			// Restart monitoring
 			go handleConnectionErrors()
@@ -166,33 +199,56 @@ func handleConnectionErrors() {
 	}
 }
 
+type rabbitTopologyDeclarer interface {
+	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp091.Table) (amqp091.Queue, error)
+	ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp091.Table) error
+	QueueBind(name, key, exchange string, noWait bool, args amqp091.Table) error
+}
+
+func declareRabbitTopology(channel rabbitTopologyDeclarer) error {
+	if _, err := channel.QueueDeclare(rabbitQueue, true, false, false, false, nil); err != nil {
+		return err
+	}
+	if rabbitExchange == "" {
+		return nil
+	}
+	if err := channel.ExchangeDeclare(rabbitExchange, "fanout", true, false, false, false, nil); err != nil {
+		return err
+	}
+	return channel.QueueBind(rabbitQueue, "", rabbitExchange, false, nil)
+}
+
+func rabbitPublishDestination(queueOverride ...string) (queueName, exchange, routingKey string) {
+	queueName = rabbitQueue
+	if len(queueOverride) > 0 && strings.TrimSpace(queueOverride[0]) != "" {
+		queueName = strings.TrimSpace(queueOverride[0])
+		return queueName, "", queueName
+	}
+	if rabbitExchange != "" {
+		return queueName, rabbitExchange, ""
+	}
+	return queueName, "", queueName
+}
+
 // Optionally, allow overriding the queue per message
 func PublishToRabbit(data []byte, queueOverride ...string) error {
 	if !rabbitEnabled {
 		return nil
 	}
-	queueName := rabbitQueue
-	if len(queueOverride) > 0 && queueOverride[0] != "" {
-		queueName = queueOverride[0]
+	queueName, exchange, routingKey := rabbitPublishDestination(queueOverride...)
+	// Override queues are not part of the WhatsApp event broadcast topology.
+	// Declare them lazily and continue publishing through the default exchange.
+	if exchange == "" && queueName != rabbitQueue {
+		if _, err := rabbitChannel.QueueDeclare(queueName, true, false, false, false, nil); err != nil {
+			log.Error().Err(err).Str("queue", queueName).Msg("Could not declare RabbitMQ queue")
+			return err
+		}
 	}
-	// Declare queue (idempotent)
-	_, err := rabbitChannel.QueueDeclare(
-		queueName,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	if err != nil {
-		log.Error().Err(err).Str("queue", queueName).Msg("Could not declare RabbitMQ queue")
-		return err
-	}
-	err = rabbitChannel.Publish(
-		"",        // exchange (default)
-		queueName, // routing key = queue
-		false,     // mandatory
-		false,     // immediate
+	err := rabbitChannel.Publish(
+		exchange,
+		routingKey,
+		false, // mandatory
+		false, // immediate
 		amqp091.Publishing{
 			ContentType:  "application/json",
 			Body:         data,
@@ -200,9 +256,9 @@ func PublishToRabbit(data []byte, queueOverride ...string) error {
 		},
 	)
 	if err != nil {
-		log.Error().Err(err).Str("queue", queueName).Msg("Could not publish to RabbitMQ")
+		log.Error().Err(err).Str("queue", queueName).Str("exchange", exchange).Msg("Could not publish to RabbitMQ")
 	} else {
-		log.Debug().Str("queue", queueName).Msg("Published message to RabbitMQ")
+		log.Debug().Str("queue", queueName).Str("exchange", exchange).Msg("Published message to RabbitMQ")
 	}
 	return err
 }

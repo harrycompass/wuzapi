@@ -20,6 +20,7 @@ services:
       # RabbitMQ configuration Optional
       - RABBITMQ_URL=amqp://wuzapi:wuzapi@rabbitmq:5672/
       - RABBITMQ_QUEUE=whatsapp_events
+      - RABBITMQ_EXCHANGE=${RABBITMQ_EXCHANGE:-}
     deploy:
       mode: replicated
       replicas: 1
