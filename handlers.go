@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,6 +37,7 @@ import (
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"golang.org/x/net/proxy"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -3531,8 +3534,9 @@ func (s *server) SendPresence() http.HandlerFunc {
 func (s *server) GetAvatar() http.HandlerFunc {
 
 	type getAvatarStruct struct {
-		Phone   string
-		Preview bool
+		Phone    string
+		Preview  bool
+		Download bool
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -3583,6 +3587,24 @@ func (s *server) GetAvatar() http.HandlerFunc {
 		}
 
 		log.Info().Str("id", pic.ID).Str("url", pic.URL).Msg("Got avatar")
+		if t.Download {
+			avatarData, contentType, err := downloadAvatar(r.Context(), pic.URL, r.Context().Value("userinfo").(Values).Get("Proxy"))
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to download avatar")
+				s.Respond(w, r, http.StatusBadGateway, fmt.Errorf("failed to download avatar: %w", err))
+				return
+			}
+			responseJson, err := json.Marshal(map[string]interface{}{
+				"ID": pic.ID, "URL": pic.URL, "Type": pic.Type, "DirectPath": pic.DirectPath,
+				"Data": base64.StdEncoding.EncodeToString(avatarData), "Mimetype": contentType,
+			})
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, err)
+			} else {
+				s.Respond(w, r, http.StatusOK, string(responseJson))
+			}
+			return
+		}
 
 		responseJson, err := json.Marshal(pic)
 		if err != nil {
@@ -3592,6 +3614,65 @@ func (s *server) GetAvatar() http.HandlerFunc {
 		}
 		return
 	}
+}
+
+func downloadAvatar(ctx context.Context, sourceURL, proxyURL string) ([]byte, string, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.TrimSpace(proxyURL) != "" {
+		parsedProxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse proxy: %w", err)
+		}
+		switch parsedProxy.Scheme {
+		case "http", "https":
+			transport.Proxy = http.ProxyURL(parsedProxy)
+		case "socks5":
+			dialer, err := proxy.FromURL(parsedProxy, &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second})
+			if err != nil {
+				return nil, "", fmt.Errorf("create SOCKS proxy: %w", err)
+			}
+			contextDialer, ok := dialer.(proxy.ContextDialer)
+			if !ok {
+				return nil, "", errors.New("SOCKS proxy does not support context dialing")
+			}
+			transport.Proxy = nil
+			transport.DialContext = contextDialer.DialContext
+		default:
+			return nil, "", fmt.Errorf("unsupported proxy scheme %q", parsedProxy.Scheme)
+		}
+	}
+	downloadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	response, err := (&http.Client{Transport: transport, Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		return nil, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, "", fmt.Errorf("avatar HTTP status %d", response.StatusCode)
+	}
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, "", fmt.Errorf("unexpected content type %q", contentType)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, (5<<20)+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("empty avatar response")
+	}
+	if len(data) > 5<<20 {
+		return nil, "", errors.New("avatar exceeds 5 MiB")
+	}
+	return data, contentType, nil
 }
 
 // Gets all contacts

@@ -1,12 +1,19 @@
-FROM golang:1.25-bookworm AS builder
+FROM m.daocloud.io/docker.io/library/golang:1.25-bookworm AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i \
+    -e 's|http://deb.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+    -e 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' \
+    /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 install -y --no-install-recommends \
     ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 install -y --no-install-recommends \
     gcc \
     g++ \
     pkg-config \
@@ -21,15 +28,22 @@ COPY . .
 ENV CGO_ENABLED=1
 RUN go build -o wuzapi
 
-FROM debian:bookworm-slim
+FROM m.daocloud.io/docker.io/library/debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i \
+    -e 's|http://deb.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \
+    -e 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' \
+    /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 install -y --no-install-recommends \
     ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 install -y --no-install-recommends \
     ca-certificates \
     netcat-openbsd \
     postgresql-client \
