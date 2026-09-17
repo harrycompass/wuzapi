@@ -823,9 +823,11 @@ func (s *server) GetStatus() http.HandlerFunc {
 		client := clientManager.GetWhatsmeowClient(txtid)
 		isConnected := false
 		isLoggedIn := false
+		isPaired := false
 		if client != nil {
 			isConnected = client.IsConnected()
 			isLoggedIn = client.IsLoggedIn()
+			isPaired = client.Store != nil && client.Store.ID != nil
 		}
 
 		jid := userInfo.Get("Jid")
@@ -847,6 +849,16 @@ func (s *server) GetStatus() http.HandlerFunc {
 			jid = client.Store.ID.String()
 			if _, err := s.db.Exec("UPDATE users SET jid=$1 WHERE id=$2", jid, txtid); err != nil {
 				log.Warn().Err(err).Str("userID", txtid).Str("jid", jid).Msg("Failed to backfill jid from active WhatsApp client")
+			}
+		}
+		// A disconnected client can still represent a linked WhatsApp device.
+		// Resolve the persisted device store so callers can distinguish
+		// "temporarily offline" from "already unpaired".
+		if !isPaired && jid != "" {
+			if parsedJID, ok := parseJID(jid); ok {
+				if device, deviceErr := container.GetDevice(r.Context(), parsedJID); deviceErr == nil && device != nil && device.ID != nil {
+					isPaired = true
+				}
 			}
 		}
 
@@ -917,6 +929,7 @@ func (s *server) GetStatus() http.HandlerFunc {
 			"name":            userInfo.Get("Name"),
 			"connected":       isConnected,
 			"loggedIn":        isLoggedIn,
+			"paired":          isPaired,
 			"token":           userInfo.Get("Token"),
 			"jid":             jid,
 			"webhook":         userInfo.Get("Webhook"),
