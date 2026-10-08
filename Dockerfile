@@ -1,4 +1,4 @@
-FROM m.daocloud.io/docker.io/library/golang:1.25-bookworm AS builder
+FROM m.daocloud.io/docker.io/library/golang:1.26-bookworm AS builder
 
 RUN sed -i \
     -e 's|http://deb.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' \

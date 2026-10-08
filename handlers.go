@@ -2689,7 +2689,7 @@ func (s *server) SetStatusMessage() http.HandlerFunc {
 
 		msg := proto.String(t.Body)
 
-		err = clientManager.GetWhatsmeowClient(txtid).SetStatusMessage(context.Background(), *msg)
+		err = clientManager.GetWhatsmeowClient(txtid).SetStatusMessage(context.Background(), types.SetStatusInput{Text: msg})
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending status message: %v", err)))
 			return
@@ -3765,13 +3765,7 @@ func (s *server) updateUserBlocklist(action events.BlocklistChangeAction) http.H
 			return
 		}
 
-		blockedJIDs := make([]string, 0)
-		if blocklist != nil {
-			blockedJIDs = make([]string, 0, len(blocklist.JIDs))
-			for _, blockedJID := range blocklist.JIDs {
-				blockedJIDs = append(blockedJIDs, blockedJID.String())
-			}
-		}
+		blockedJIDs := blocklistJIDs(blocklist)
 
 		details := "User blocked"
 		if action == events.BlocklistChangeActionUnblock {
@@ -3814,7 +3808,7 @@ func updateBlocklistWithResolvedJID(ctx context.Context, client *whatsmeow.Clien
 		return jid, nil, err
 	}
 
-	blocklist, err := client.UpdateBlocklist(ctx, blocklistJID, action)
+	blocklist, err := client.UpdateBlocklist(ctx, blocklistJID, action, "")
 	return blocklistJID, blocklist, err
 }
 
@@ -3856,17 +3850,35 @@ func (s *server) UnblockUser() http.HandlerFunc {
 	return s.updateUserBlocklist(events.BlocklistChangeActionUnblock)
 }
 
+// blocklistJIDs retains only active entries and prefers phone-number JIDs when
+// available, keeping the existing API response useful to callers.
+func blocklistJIDs(blocklist *types.Blocklist) []string {
+	jids := []string{}
+	if blocklist == nil {
+		return jids
+	}
+	for _, item := range blocklist.Items {
+		if !item.Active {
+			continue
+		}
+		jid := item.PN
+		if jid.IsEmpty() {
+			jid = item.LID
+		}
+		if !jid.IsEmpty() {
+			jids = append(jids, jid.String())
+		}
+	}
+	return jids
+}
+
 // formatBlocklist converts a whatsmeow blocklist into the JSON-friendly shape
 // returned by the blocklist endpoints: the blocked JIDs as strings plus the
 // dhash. A nil blocklist yields an empty list (never null) and an empty dhash.
 func formatBlocklist(blocklist *types.Blocklist) map[string]interface{} {
-	jids := []string{}
+	jids := blocklistJIDs(blocklist)
 	dhash := ""
 	if blocklist != nil {
-		jids = make([]string, len(blocklist.JIDs))
-		for i, blockedJID := range blocklist.JIDs {
-			jids[i] = blockedJID.String()
-		}
 		dhash = blocklist.DHash
 	}
 	return map[string]interface{}{
@@ -3888,7 +3900,7 @@ func (s *server) GetBlocklist() http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		blocklist, err := client.GetBlocklist(ctx)
+		blocklist, err := client.GetBlocklist(ctx, "")
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to get blocklist: %w", err))
 			return

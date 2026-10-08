@@ -33,17 +33,19 @@ func TestFormatBlocklist(t *testing.T) {
 		if !ok1 || !ok2 {
 			t.Fatalf("parseJID failed: ok1=%v ok2=%v", ok1, ok2)
 		}
-		bl := &types.Blocklist{DHash: "1234567890", JIDs: []types.JID{j1, j2}}
+		bl := &types.Blocklist{DHash: "1234567890", Items: []types.BlocklistItem{
+			{LID: j1, Active: true},
+			{PN: j2, Active: true},
+			{LID: types.NewJID("inactive", types.HiddenUserServer), Active: false},
+		}}
 
 		got := formatBlocklist(bl)
 		jids := got["Blocklist"].([]string)
-		if len(jids) != len(bl.JIDs) {
-			t.Fatalf("len(Blocklist) = %d; want %d", len(jids), len(bl.JIDs))
+		if len(jids) != 2 {
+			t.Fatalf("len(Blocklist) = %d; want 2", len(jids))
 		}
-		for i := range bl.JIDs {
-			if jids[i] != bl.JIDs[i].String() {
-				t.Errorf("Blocklist[%d] = %q; want %q", i, jids[i], bl.JIDs[i].String())
-			}
+		if jids[0] != j1.String() || jids[1] != j2.String() {
+			t.Errorf("Blocklist = %v; want [%s %s]", jids, j1, j2)
 		}
 		if got["DHash"] != "1234567890" {
 			t.Errorf("DHash = %v; want %q", got["DHash"], "1234567890")
