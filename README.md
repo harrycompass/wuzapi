@@ -14,6 +14,12 @@ Be very careful—do not use this to send SPAM or anything similar. Use at your 
 
 ## Available endpoints
 
+Missing message bodies can be requested with `POST /chat/request-unavailable-message`
+using the account Token and the original `chat`, `sender`, and `id`. Requests are
+sent to the account's primary device using `SendPeerMessage`. A successful HTTP
+response acknowledges the request; the recovered body arrives separately as a
+normal `Message` event. The primary device may be unable to supply the body.
+
 * **Session:** Connect, disconnect, and log out from WhatsApp. Retrieve connection status and QR codes for scanning.
 * **Messages:** Send text, image, audio, document, template, video, sticker, location, contact, and poll messages.
 * **Users:** Check if phone numbers have WhatsApp, get user information and avatars, and retrieve the full contact list.

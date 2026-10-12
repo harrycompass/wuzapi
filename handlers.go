@@ -7318,11 +7318,11 @@ func (s *server) RequestUnavailableMessage() http.HandlerFunc {
 		// Build the unavailable message request
 		unavailableMessage := client.BuildUnavailableMessageRequest(chatJID, senderJID, t.ID)
 
-		// Send the request with Peer: true as required by the documentation
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Request the body from our own primary device, not the original chat peer.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		resp, err := client.SendMessage(ctx, chatJID, unavailableMessage, whatsmeow.SendRequestExtra{Peer: true})
+		resp, err := client.SendPeerMessage(ctx, unavailableMessage)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to send unavailable message request: %s", err)))
 			return
